@@ -1,97 +1,119 @@
 /*jslint nomen: true */
 /*global Buffer, console, require */
 
-var fs = require('fs'),
-	_ = require('underscore');
+var fs = require('fs');
 
-function CSVFile(options) {
+var CsvBufferReader = function (file, options) {
 	'use strict';
 
 	/**
 	 * File to read...
 	 */
-	var file = options.file,
+	this.file = file;
+	/**
+	 * The amount of the file to read each time
+	 */
+	this.bufferSize = options.bufferSize || 1024;
+
+	/**
+	 * What mode are we opening this file, 666
+	 * should be fine most of the time
+	 */
+	this.mode = options.mode || '0666';
+
+	/**
+	 * Encoding, node is standard on utf8 but never know
+	 */
+	this.encoding = options.encoding || 'utf8';
+
+	/**
+	 * Flag, for whatever reason this is nice to have as an option
+	 */
+	this.flag = options.flag || 'r';
+
+	/**
+	 * Unix, windows etc
+	 */
+	this.endOfLine = options.endOfLine || '\n';
+
+	this._blankBuffer = null;
+	this._bufferOffset = 0;
+	this._fileOffset = 0;
+
+	this._callback = null;
+	this._finishedCallback = null;
+	this._fd = null;
+};
+
+CsvBufferReader.prototype.parse = function (callback, finishedCallback) {
+	'use strict';
+
+	this._callback = callback || function () { };
+	this._finishedCallback = finishedCallback || function () { };
+
+	this._blankBuffer = new Buffer(this.bufferSize, this.encoding);
+	this._bufferOffset = 0;
+	this._fileOffset = 0;
+
+	fs.open(this.file, this.flag, this.mode, function (err, fd) {
+		this._fd = fd;
+
+		this._grabBuffer();
+	}.bind(this));
+};
+
+CsvBufferReader.prototype._handleBuffer = function (err, bytesRead, buffer) {
+	'use strict';
+
+	var lines = buffer.toString(),
+		lastLine = lines.lastIndexOf(this.endOfLine),
+		lineOffset = 0;
+
+	// Workout where the lastline appeared in the read buffer
+	lineOffset = lines.substr(lastLine).length - 1;
+
+	// Strip the string down to the last line
+	lines = lines.substr(0, lastLine);
+
+	// Calc the fileoffset based on the last line ending
+	this._fileOffset += (bytesRead - lineOffset);
+
+	if ((bytesRead <= 0) || (bytesRead < this.bufferSize)) {
 		/**
-		 * The amount of the file to read each time
+		 * finished reading the file, pass the amount of bytes we have read to
+		 * the callback so its possible to truncate those bytes..
+		 *
+		 * @todo  think about how this is going to work, need to somehow chop out
+		 * the read bytes and leave the bytes we haven't read intact
 		 */
-		bufferSize = options.bufferSize || 1024,
+		return this._finishedCallback(this._fileOffset);
+	}
 
-		/**
-		 * What mode are we opening this file, 666
-		 * should be fine most of the time
-		 */
-		mode = options.mode || '0666',
+	// We have our lines lets split & pass on
+	this._callback(lines.split(this.endOfLine));
 
-		/**
-		 * Encoding, node is standard on utf8 but never know
-		 */
-		encoding = options.encoding || 'utf8',
+	// lets keep going
+	this._grabBuffer();
+};
 
-		/**
-		 * Flag, for whatever reason this is nice to have as an option
-		 */
-		flag = options.flag || 'r',
+CsvBufferReader.prototype._grabBuffer = function () {
+	'use strict';
 
-		/**
-		 * Unix, windows etc
-		 */
-		endOfLine = options.endOfLine || '\r\n';
+	fs.read(this._fd, this._blankBuffer, this._bufferOffset, this._blankBuffer.length, this._fileOffset, this._handleBuffer.bind(this));
+};
 
-	return {
-
-		parse: function (cb, finishedCb) {
-			var callback = cb,
-				/**
-				 * Optional, might want to clean
-				 * the file or something after
-				 */
-				finishedCallback = finishedCb || function () { };
-
-			fs.open(file, flag, mode, function (err, fd) {
-				var blankBuffer = new Buffer(bufferSize, encoding),
-					bufferOffset = 0,
-					fileOffset = 0,
-					grabBuffer = null,
-					handleBuffer = null;
-
-				grabBuffer = function () {
-					fs.read(fd, blankBuffer, bufferOffset, blankBuffer.length, fileOffset, handleBuffer);
-				};
-
-				/**
-				 * @todo , need to handle if a file ends during
-				 * the buffer limit, by using bufferOffset and
-				 * setting the blank buffer... need to think about it
-				 */
-
-				handleBuffer = function (err, bytesRead, buffer) {
-					callback(buffer.toString().split(endOfLine));
-					fileOffset += bytesRead;
-
-					if ((bytesRead <= 0) || (bytesRead < bufferSize)) {
-						// finished reading the file, pass the amount of bytes we have read to the cb
-						return finishedCallback(fileOffset);
-					}
-
-					// lets keep going
-					grabBuffer();
-				};
-
-				grabBuffer();
-			});
-		}
-	};
-}
-
-var p = new CSVFile({
-	file: '/Users/gav/test.csv',
-	bufferSize: 16 * 1024
-});
+var p = new CsvBufferReader('/Users/gav/test.log', { bufferSize: 512 });
 
 p.parse(function (lines) {
 	'use strict';
 
-	_.each(lines, function (line) {
+	console.log('Callback Called:');
+
+	lines.forEach(function (line) {
 		console.log('Line: ' + line);
 	});
+}, function (totalBytes) {
+	'use strict';
+
+	console.log('Total Bytes read: ' + totalBytes);
 });
